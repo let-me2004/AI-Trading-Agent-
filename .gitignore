@@ -1,0 +1,16 @@
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Secret keys and configuration
+.env
+config.py
+
+# Data, Model & Log files
+*.csv
+*.joblib
+*.log
+
+# IDE settings
+.vscode/
