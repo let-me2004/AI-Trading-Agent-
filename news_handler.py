@@ -1,4 +1,4 @@
-# news_handler.py - FINAL HARDENED VERSION
+# news_handler.py - FINAL DEFINITIVE VERSION (using yfinance)
 
 import yfinance as yf
 import logging
@@ -15,7 +15,10 @@ def get_latest_headlines(stock_symbol, count=5):
     :return: A list of headline strings.
     """
     try:
+        # Append .NS for National Stock Exchange symbols
         ticker_symbol = f"{stock_symbol}.NS"
+        
+        # Create a Ticker object
         ticker = yf.Ticker(ticker_symbol)
         
         # Fetch the news
@@ -25,16 +28,14 @@ def get_latest_headlines(stock_symbol, count=5):
             logger.info(f"   ...No news found for {stock_symbol} via yfinance.")
             return []
             
-        # --- CORRECTED PARSING LOGIC ---
+        # Correctly parse the nested data structure with safety checks
         headlines = []
         for article in news_list[:count]:
-            # Use .get() to safely access nested keys to prevent crashes
             content = article.get('content', {})
             title = content.get('title')
             
             if title: # Only add the headline if it's not empty
                 headlines.append(title)
-        # --------------------------------
                 
         return headlines
 
@@ -42,8 +43,7 @@ def get_latest_headlines(stock_symbol, count=5):
         logger.error(f"An error occurred in yfinance news handler for {stock_symbol}: {e}", exc_info=False)
         return []
 
-
-# --- This is how we test our module ---
+# --- Test Block ---
 if __name__ == '__main__':
     logger = logger_setup.setup_logger()
     logger.info("--- Standalone yfinance News Handler Test ---")

@@ -1,10 +1,11 @@
-# fyers_client.py - MASTER VERSION
+# fyers_client.py - FINAL MASTER VERSION
 
 import os
 import webbrowser
 import datetime
 import pandas as pd
 from fyers_apiv3.fyersModel import FyersModel, SessionModel
+from fyers_apiv3.FyersWebsocket.data_ws import FyersDataSocket
 from config import FYERS_APP_ID, FYERS_SECRET_KEY
 import time
 import logging
@@ -12,10 +13,65 @@ import logging
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-REDIRECT_URI = "http://127.0.0.1" 
+REDIRECT_URI = "http://127.0.0.1"
 TOKEN_FILE = "access_token.txt"
 
+# --- Authentication Functions ---
+def generate_new_token():
+    """Generates a new access token via the manual login flow."""
+    try:
+        session = SessionModel(client_id=FYERS_APP_ID, secret_key=FYERS_SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
+        auth_url = session.generate_authcode()
+        logger.info("--- NEW FYERS AUTHENTICATION REQUIRED ---")
+        logger.info("1. A login page will now open. Please log in.")
+        webbrowser.open(auth_url, new=1)
+        auth_code = input("2. Paste the auth_code from the redirected URL here and press Enter: ")
+        session.set_token(auth_code)
+        response = session.generate_token()
+        if response and "access_token" in response:
+            access_token = response["access_token"]
+            logger.info("Access Token generated successfully.")
+            with open(TOKEN_FILE, 'w') as f: f.write(access_token)
+            return access_token
+        else:
+            logger.error(f"Failed to generate Access Token. Response: {response}")
+            return None
+    except Exception as e:
+        logger.error(f"Error during new token generation: {e}", exc_info=True)
+        return None
 
+def get_access_token():
+    """Gets the access token from a file if it exists, otherwise generates a new one."""
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'r') as f:
+            return f.read().strip()
+    else:
+        return generate_new_token()
+
+def get_fyers_model():
+    """Initializes and returns an authenticated FyersModel instance. Handles token expiration automatically."""
+    access_token = None
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, 'r') as f:
+            access_token = f.read().strip()
+    if access_token:
+        fyers = FyersModel(client_id=FYERS_APP_ID, token=access_token, log_path=os.path.join(os.getcwd(), "logs"))
+        profile_check = fyers.get_profile()
+        if profile_check.get('s') == 'ok':
+            logger.info("Authentication successful using saved token.")
+            return fyers
+        else:
+            logger.warning("Saved token is invalid or expired. Requesting new token.")
+            if os.path.exists(TOKEN_FILE): os.remove(TOKEN_FILE)
+    
+    new_access_token = generate_new_token()
+    if new_access_token:
+        fyers = FyersModel(client_id=FYERS_APP_ID, token=new_access_token, log_path=os.path.join(os.getcwd(), "logs"))
+        return fyers
+    else:
+        return None
+
+# --- Data Functions ---
 def get_historical_data(fyers_instance, symbol, timeframe, start_date, end_date):
     """Fetches historical data and returns it as a pandas DataFrame."""
     try:
@@ -88,50 +144,49 @@ def find_nifty_option_by_offset(fyers_instance, option_type="CE", offset=0):
         logger.error(f"An error occurred in find_nifty_option_by_offset: {e}", exc_info=True)
         return None
 
-def generate_new_token():
-    """Generates a new access token via the manual login flow."""
+# --- WebSocket Function (UPGRADED) ---
+def start_level2_websocket(symbols, on_tick):
+    """Connects to the Fyers WebSocket for Level 2 data. THIS IS NOW NON-BLOCKING."""
     try:
-        session = SessionModel(client_id=FYERS_APP_ID, secret_key=FYERS_SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        auth_url = session.generate_authcode()
-        logger.info("--- NEW FYERS AUTHENTICATION REQUIRED ---")
-        logger.info("1. A login page will now open. Please log in.")
-        webbrowser.open(auth_url, new=1)
-        auth_code = input("2. Paste the auth_code from the redirected URL here and press Enter: ")
-        session.set_token(auth_code)
-        response = session.generate_token()
-        if response and "access_token" in response:
-            access_token = response["access_token"]
-            logger.info("Access Token generated successfully.")
-            with open(TOKEN_FILE, 'w') as f: f.write(access_token)
-            return access_token
-        else:
-            logger.error(f"Failed to generate Access Token. Response: {response}")
+        access_token = get_access_token()
+        if not access_token:
+            logger.critical("Could not get access token for WebSocket.")
             return None
-    except Exception as e:
-        logger.error(f"Error during new token generation: {e}", exc_info=True)
-        return None
 
-def get_fyers_model():
-    """Initializes and returns an authenticated FyersModel instance. Handles token expiration automatically."""
-    access_token = None
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'r') as f:
-            access_token = f.read().strip()
+        client_id = FYERS_APP_ID
+        socket_access_token = f"{client_id}:{access_token}"
 
-    if access_token:
-        fyers = FyersModel(client_id=FYERS_APP_ID, token=access_token, log_path=os.path.join(os.getcwd(), "logs"))
-        profile_check = fyers.get_profile()
+        def on_message(message):
+            on_tick(message)
+
+        def on_error(message):
+            logger.error(f"WebSocket Error: {message}")
+
+        def on_close(message):
+            logger.warning(f"WebSocket Connection Closed: {message}")
+
+        def on_open():
+            logger.info("WebSocket Connection Opened. Subscribing to symbols...")
+            data_type = "SymbolData" 
+            fyers_socket.subscribe(symbols=symbols, data_type=data_type)
+            logger.info(f"Subscribed to: {symbols}")
+
+        fyers_socket = FyersDataSocket(
+            access_token=socket_access_token,
+            log_path=os.path.join(os.getcwd(), "logs")
+        )
+
+        fyers_socket.on_message = on_message
+        fyers_socket.on_error = on_error
+        fyers_socket.on_close = on_close
+        fyers_socket.on_open = on_open
+
+        fyers_socket.connect()
+        logger.info("WebSocket connection process initiated...")
         
-        if profile_check.get('s') == 'ok':
-            logger.info("Authentication successful using saved token.")
-            return fyers
-        else:
-            logger.warning("Saved token is invalid or expired. Requesting new token.")
-            if os.path.exists(TOKEN_FILE): os.remove(TOKEN_FILE)
-    
-    new_access_token = generate_new_token()
-    if new_access_token:
-        fyers = FyersModel(client_id=FYERS_APP_ID, token=new_access_token, log_path=os.path.join(os.getcwd(), "logs"))
-        return fyers
-    else:
+        # We REMOVED keep_running() and will now return the socket object
+        return fyers_socket
+
+    except Exception as e:
+        logger.error(f"An error occurred in start_level2_websocket: {e}", exc_info=True)
         return None

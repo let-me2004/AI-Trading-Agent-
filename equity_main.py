@@ -38,19 +38,49 @@ def run_equity_agent_cycle(fyers, paper_account):
         paper_account.get_summary()
         return
 
-    # STEP 2: QUALITATIVE FILTER (LLM SENTIMENT)
-    logger.info(f"[Step 2] Applying qualitative filter to {len(shortlist)} stock(s)...")
+    # STEP 2: APPLY SECTOR & SENTIMENT FILTERS
+    logger.info(f"[Step 2] Applying Sector and Sentiment filters to {len(shortlist)} stock(s)...")
     final_trade_candidates = []
+    import sector_mapper # Import our new module
+    import technical_analyzer
+
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=10)
+
     for symbol in shortlist:
         if symbol in paper_account.positions:
             logger.info(f"   ...Already holding {symbol}. Skipping analysis.")
             continue
         
+        # --- NEW: SECTOR CONFLUENCE CHECK ---
+        sector_index = sector_mapper.get_sector_index_for_stock(symbol)
+        if not sector_index:
+            logger.warning(f"   ...No sector mapping found for {symbol}. Skipping.")
+            continue
+
+        logger.info(f"   ...Checking sector trend for {symbol} (Sector: {sector_index})")
+        df_sector_45min = fyers_client.get_historical_data(fyers, sector_index, "45", start_date, end_date)
+        
+        # We need a simplified technical check here for the sector
+        if not df_sector_45min.empty:
+            ema_50_sector = df_sector_45min['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            latest_price_sector = df_sector_45min['close'].iloc[-1]
+            sector_regime = "Bullish" if latest_price_sector > ema_50_sector else "Bearish"
+        else:
+            sector_regime = "Neutral"
+
+        if sector_regime != "Bullish":
+            logger.info(f"   ---> REJECTED: {symbol} failed sector check. Sector regime is '{sector_regime}'.")
+            continue
+        logger.info(f"   ...Sector check PASSED for {symbol}.")
+        # ------------------------------------
+
+        # --- QUALITATIVE SENTIMENT CHECK ---
         logger.info(f"   ...Analyzing news for {symbol}...")
         stock_code = symbol.split(':')[1].split('-')[0]
         news_headlines = " | ".join(news_handler.get_latest_headlines(stock_code))
         
-        tech_string = f"Stock {stock_code} is showing strong price and volume surge."
+        tech_string = f"Stock {stock_code} is surging with strong sector support."
         llm_analysis = llm_handler.get_market_analysis(tech_string, news_headlines)
         
         if llm_analysis and llm_analysis['outlook'] in ["Bullish", "Strongly Bullish"]:
@@ -113,7 +143,7 @@ if __name__ == '__main__':
 
                 if DEBUG_MODE or (market_open <= now <= market_close):
                     run_equity_agent_cycle(fyers, paper_account)
-                    wait_time = 60 if DEBUG_MODE else 100
+                    wait_time = 60 if DEBUG_MODE else 1000
                     logger.info(f"Cycle complete. Waiting for {wait_time} seconds...")
                     time.sleep(wait_time)
                 else:
